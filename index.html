@@ -3,117 +3,130 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>番剧播放器</title>
+<title>4kcz 搜番播放器</title>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.15/dist/hls.min.js"></script>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#111;color:#eee;font-family:-apple-system,"PingFang SC",sans-serif}
-.bar{padding:10px;background:#1b1b1b;position:sticky;top:0;border-bottom:1px solid #333}
-.row{display:flex;gap:6px;margin-bottom:6px}
+.bar{padding:10px;background:#1b1b1b;position:sticky;top:0;display:flex;flex-direction:column;gap:6px}
+.row{display:flex;gap:6px}
 input,button,select{padding:10px;border-radius:8px;border:1px solid #444;background:#000;color:#fff}
 input{flex:1;min-width:0}
-label{font-size:12px;display:flex;align-items:center;gap:4px}
+button{cursor:pointer;background:#2e7dff}
 video{width:100%;background:#000;max-height:38vh}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:10px}
 .card{background:#1c1c1c;border-radius:10px;overflow:hidden}
 .card img{width:100%;height:130px;object-fit:cover;display:block;background:#000}
-.card div{padding:6px;font-size:13px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.card div{padding:6px;font-size:13px;line-height:1.3}
 .ep{display:inline-block;margin:3px;padding:6px 9px;background:#262626;border-radius:6px;font-size:13px;cursor:pointer}
 .ep.active{background:#2e7dff}
 .msg{padding:10px;color:#aaa;font-size:13px}
-#player{display:none}
+.back{color:#7fb2ff;font-size:14px;padding:8px 10px;cursor:pointer}
 </style>
 </head>
 <body>
 <div class="bar">
-  <div class="row"><input id="site" placeholder="站源，如 https://www.xxx.com"></div>
   <div class="row">
-    <input id="kw" placeholder="剧名，如 进击的巨人">
+    <input id="site" value="https://www.4kcz.com" placeholder="站源">
+    <button onclick="goHome()">首页</button>
+  </div>
+  <div class="row">
+    <input id="kw" placeholder="输入剧名，如 进击的巨人">
     <button onclick="search()">搜索</button>
   </div>
-  <div class="row">
-    <label><input type="checkbox" id="useproxy" checked>视频走后端代理（防盗链站必开）</label>
-  </div>
 </div>
-
-<div id="player">
-  <video id="v" controls playsinline></video>
-  <div id="eps"></div>
+<div id="view">
+  <div id="main" class="grid"></div>
+  <div id="detail" style="display:none"></div>
 </div>
-<div id="main" class="grid"></div>
-<div id="msg" class="msg"></div>
+<div id="msg" class="msg">打开自动加载首页…</div>
 
 <script>
 const $ = id => document.getElementById(id);
 const msg = t => $('msg').textContent = t;
-const esc = s => (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const esc = s => (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const api = path => path; // 同域 Vercel，直接相对路径
+let hls;
 
-// 后端 API 地址：本地开发可改成 http://localhost:3000
-const API = location.origin;
-
-async function search() {
-  $('main').innerHTML = ''; $('player').style.display = 'none';
-  const site = $('site').value.trim(); const kw = $('kw').value.trim();
-  if (!site || !kw) { msg('填站源和剧名'); return; }
-  msg('搜索中…');
+async function loadHome() {
+  const site = $('site').value.trim().replace(/\/+$/, '');
+  $('detail').style.display='none'; $('main').style.display='grid';
+  msg('加载首页…');
   try {
-    const r = await fetch(`${API}/api/search?site=${encodeURIComponent(site)}&kw=${encodeURIComponent(kw)}`);
+    const r = await fetch('/api/home?site=' + encodeURIComponent(site));
     const j = await r.json();
-    if (j.ok && j.items.length) {
-      render(j.items); msg(`找到 ${j.items.length} 个结果`);
-    } else {
-      msg('没搜到：' + (j.msg || '换代理或手动填详情页链接'));
-    }
-  } catch (e) { msg('搜索失败：' + e); }
+    if (!j.ok || !j.list.length) { msg(j.msg || '首页加载失败'); return; }
+    renderList(j.list);
+    msg('首页 ' + j.count + ' 部');
+  } catch(e) { msg('首页失败：'+e.message); }
 }
 
-function render(list) {
-  $('main').innerHTML = list.slice(0, 40).map(it =>
-    `<div class="card" onclick="openDetail('${encodeURIComponent(it.url)}')">
-      ${it.img ? `<img src="${it.img}" onerror="this.style.display='none'">` : ''}
+// 搜索
+async function searchReq() {
+  $('detail').style.display='none'; $('main').style.display='grid'; $('main').innerHTML='';
+  msg('搜索中…');
+  try {
+    const r = await fetch('/api/search?site=' + encodeURIComponent($('site').value.trim()) + '&kw=' + encodeURIComponent($('kw').value.trim()));
+    const j = await r.json();
+    if (!j.ok || !j.list.length) { msg(j.msg || '没结果，换关键词'); return; }
+    renderList(j.list);
+    msg('找到 ' + j.count + ' 个结果');
+  } catch(e) { msg('请求失败：'+e.message); }
+}
+
+async function search() {
+  const kw = $('kw').value.trim();
+  if (!kw) { msg('输入剧名'); return; }
+  searchReq();
+}
+
+function renderList(list, fromUrl) {
+  $('main').innerHTML = list.map(it => `
+    <div class="card" onclick="openDetail('${encodeURIComponent(it.url)}')">
+      ${it.cover?`<img src="${it.cover}" onerror="this.style.display='none'">`:''}
       <div>${esc(it.title)}</div>
     </div>`).join('');
 }
 
-let hls;
 async function openDetail(enc) {
   const url = decodeURIComponent(enc);
-  $('player').style.display = 'block'; $('eps').innerHTML = '';
-  msg('解析：' + url);
+  $('main').style.display='none'; $('detail').style.display='block';
+  $('detail').innerHTML = '<video id="v" controls playsinline></video><div id="eps"></div>';
+  msg('解析选集：'+url);
   try {
-    const r = await fetch(`${API}/api/detail?url=${encodeURIComponent(url)}`);
+    const r = await fetch('/api/detail?url=' + encodeURIComponent(url));
     const j = await r.json();
-    let eps = j.eps || [];
-    // 直链视频合并到选集最前面
-    if (j.direct && j.direct.length) eps = j.direct.concat(eps);
-    if (eps.length) {
-      $('eps').innerHTML = eps.slice(0, 100).map((x, i) =>
-        `<span class="ep" data-url="${encodeURIComponent(x.url)}" onclick="playEp(this,'${encodeURIComponent(x.url)}')">${esc(x.name || ('第'+(i+1)+'集'))}</span>`
-      ).join('');
-      playEp(null, encodeURIComponent(eps[0].url));
-      msg(`找到 ${eps.length} 集`);
-    } else {
-      msg('没抽到选集。可能是动态加载/第三方播放器。可复制 m3u8/mp4 直链手动播。');
-    }
-  } catch (e) { msg('解析失败：' + e); }
+    if (!j.ok || !j.eps.length) { msg(j.msg || '没抽到选集'); return; }
+    renderEps(j.eps);
+    msg('共 '+j.count+' 集');
+  } catch(e) { msg('详情失败：'+e.message); }
 }
 
-function playEp(el, enc) {
-  [...document.querySelectorAll('.ep')].forEach(e => e.classList.remove('active'));
-  if (el) el.classList.add('active');
-  const url = decodeURIComponent(enc);
-  let src = url;
-  if ($('useproxy').checked) src = `${API}/api/proxy?url=${encodeURIComponent(url)}&ref=${encodeURIComponent($('site').value.trim())}`;
-  const v = $('v');
-  if (hls) { hls.destroy(); hls = null; }
-  if (/\.m3u8/i.test(url)) {
-    if (v.canPlayType('application/vnd.apple.mpegurl')) { v.src = src; }
-    else if (window.Hls && Hls.isSupported()) {
-      hls = new Hls(); hls.loadSource(src); hls.attachMedia(v);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => v.play());
-    } else msg('此浏览器不支持 m3u8，换 Safari');
-  } else { v.src = src; }
-  v.play().catch(() => msg('点一下视频播放（手机禁止自动播）'));
+function renderEps(eps) {
+  $('eps').innerHTML = eps.map((x,i) => `
+    <span class="ep ${i===0?'active':''}" onclick="playEp('${encodeURIComponent(x.url)}',this)">${esc(x.name||('第'+(i+1)+'集'))}</span>
+  `).join('');
+  // 自动播第一个
+  if (eps[0]) playEp(encodeURIComponent(eps[0].url), $('eps').firstChild);
 }
+
+function playEp(enc, el) {
+  [...$('eps').children].forEach(c=>c.classList.remove('active'));
+  if (el) el.classList.add('active');
+  let url = decodeURIComponent(enc);
+  // 走代理（补 Referer、重写 m3u8）
+  url = '/api/proxy?url=' + encodeURIComponent(url) + '&ref=' + encodeURIComponent($('site').value.trim());
+  const v = $('v'); if (!v) return;
+  if (hls) { hls.destroy(); hls = null; }
+  if (/\.m3u8/i.test(decodeURIComponent(enc))) {
+    if (v.canPlayType('application/vnd.apple.mpegurl')) v.src = url;
+    else if (window.Hls && Hls.isSupported()) { hls = new Hls(); hls.loadSource(url); hls.attachMedia(v); hls.on(Hls.Events.MANIFEST_PARSED, ()=>v.play()); }
+    else msg('浏览器不支持 m3u8，换 Safari');
+  } else v.src = url;
+  v.play().catch(()=>msg('点一下视频播放'));
+}
+
+function goHome() { $('kw').value=''; loadHome(); }
+loadHome();
 </script>
 </body>
 </html>

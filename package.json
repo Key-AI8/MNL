@@ -1,13 +1,10 @@
 {
-  "name": "anime-player",
+  "name": "4kcz-player",
   "version": "1.0.0",
-  "private": true,
+  "description": "4kcz.com 影视搜索播放器（Vercel 云函数版）",
   "type": "module",
   "scripts": {
-    "start": "vercel dev",
-    "dev": "vercel dev"
+    "test": "node test.js"
   },
-  "devDependencies": {
-    "vercel": "^39.0.0"
-  }
+  "dependencies": {}
 }
