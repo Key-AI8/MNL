@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>番剧播放器</title>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.15/dist/hls.min.js"></script>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#111;color:#eee;font-family:-apple-system,"PingFang SC",sans-serif}
+.bar{padding:10px;background:#1b1b1b;position:sticky;top:0;border-bottom:1px solid #333}
+.row{display:flex;gap:6px;margin-bottom:6px}
+input,button,select{padding:10px;border-radius:8px;border:1px solid #444;background:#000;color:#fff}
+input{flex:1;min-width:0}
+label{font-size:12px;display:flex;align-items:center;gap:4px}
+video{width:100%;background:#000;max-height:38vh}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:10px}
+.card{background:#1c1c1c;border-radius:10px;overflow:hidden}
+.card img{width:100%;height:130px;object-fit:cover;display:block;background:#000}
+.card div{padding:6px;font-size:13px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ep{display:inline-block;margin:3px;padding:6px 9px;background:#262626;border-radius:6px;font-size:13px;cursor:pointer}
+.ep.active{background:#2e7dff}
+.msg{padding:10px;color:#aaa;font-size:13px}
+#player{display:none}
+</style>
+</head>
+<body>
+<div class="bar">
+  <div class="row"><input id="site" placeholder="站源，如 https://www.xxx.com"></div>
+  <div class="row">
+    <input id="kw" placeholder="剧名，如 进击的巨人">
+    <button onclick="search()">搜索</button>
+  </div>
+  <div class="row">
+    <label><input type="checkbox" id="useproxy" checked>视频走后端代理（防盗链站必开）</label>
+  </div>
+</div>
+
+<div id="player">
+  <video id="v" controls playsinline></video>
+  <div id="eps"></div>
+</div>
+<div id="main" class="grid"></div>
+<div id="msg" class="msg"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const msg = t => $('msg').textContent = t;
+const esc = s => (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// 后端 API 地址：本地开发可改成 http://localhost:3000
+const API = location.origin;
+
+async function search() {
+  $('main').innerHTML = ''; $('player').style.display = 'none';
+  const site = $('site').value.trim(); const kw = $('kw').value.trim();
+  if (!site || !kw) { msg('填站源和剧名'); return; }
+  msg('搜索中…');
+  try {
+    const r = await fetch(`${API}/api/search?site=${encodeURIComponent(site)}&kw=${encodeURIComponent(kw)}`);
+    const j = await r.json();
+    if (j.ok && j.items.length) {
+      render(j.items); msg(`找到 ${j.items.length} 个结果`);
+    } else {
+      msg('没搜到：' + (j.msg || '换代理或手动填详情页链接'));
+    }
+  } catch (e) { msg('搜索失败：' + e); }
+}
+
+function render(list) {
+  $('main').innerHTML = list.slice(0, 40).map(it =>
+    `<div class="card" onclick="openDetail('${encodeURIComponent(it.url)}')">
+      ${it.img ? `<img src="${it.img}" onerror="this.style.display='none'">` : ''}
+      <div>${esc(it.title)}</div>
+    </div>`).join('');
+}
+
+let hls;
+async function openDetail(enc) {
+  const url = decodeURIComponent(enc);
+  $('player').style.display = 'block'; $('eps').innerHTML = '';
+  msg('解析：' + url);
+  try {
+    const r = await fetch(`${API}/api/detail?url=${encodeURIComponent(url)}`);
+    const j = await r.json();
+    let eps = j.eps || [];
+    // 直链视频合并到选集最前面
+    if (j.direct && j.direct.length) eps = j.direct.concat(eps);
+    if (eps.length) {
+      $('eps').innerHTML = eps.slice(0, 100).map((x, i) =>
+        `<span class="ep" data-url="${encodeURIComponent(x.url)}" onclick="playEp(this,'${encodeURIComponent(x.url)}')">${esc(x.name || ('第'+(i+1)+'集'))}</span>`
+      ).join('');
+      playEp(null, encodeURIComponent(eps[0].url));
+      msg(`找到 ${eps.length} 集`);
+    } else {
+      msg('没抽到选集。可能是动态加载/第三方播放器。可复制 m3u8/mp4 直链手动播。');
+    }
+  } catch (e) { msg('解析失败：' + e); }
+}
+
+function playEp(el, enc) {
+  [...document.querySelectorAll('.ep')].forEach(e => e.classList.remove('active'));
+  if (el) el.classList.add('active');
+  const url = decodeURIComponent(enc);
+  let src = url;
+  if ($('useproxy').checked) src = `${API}/api/proxy?url=${encodeURIComponent(url)}&ref=${encodeURIComponent($('site').value.trim())}`;
+  const v = $('v');
+  if (hls) { hls.destroy(); hls = null; }
+  if (/\.m3u8/i.test(url)) {
+    if (v.canPlayType('application/vnd.apple.mpegurl')) { v.src = src; }
+    else if (window.Hls && Hls.isSupported()) {
+      hls = new Hls(); hls.loadSource(src); hls.attachMedia(v);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => v.play());
+    } else msg('此浏览器不支持 m3u8，换 Safari');
+  } else { v.src = src; }
+  v.play().catch(() => msg('点一下视频播放（手机禁止自动播）'));
+}
+</script>
+</body>
+</html>
