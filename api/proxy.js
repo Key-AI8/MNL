@@ -1,47 +1,40 @@
-// api/proxy.js —— Vercel Serverless Function
-// 视频/直播流代理：补 Referer，m3u8 自动重写分片回本代理，解决跨域 + 防盗链
+// api/proxy.js —— 视频代理（补 Referer、重写 m3u8 分片地址）
 export default async function handler(req, res) {
-  const { url, ref } = req.query;
-  if (!url) return res.status(400).send('need url');
+  const target = (req.query.url || '').trim();
+  const ref = (req.query.ref || 'https://www.4kcz.com/').trim();
+  if (!target) return res.status(400).json({ ok: 0, msg: '缺少 url' });
 
-  const UA =
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
-    '(KHTML, like Gecko) Chrome/120.0 Safari/537.36';
-
-  const target = decodeURIComponent(String(url));
-  const referer = ref ? decodeURIComponent(String(ref)) : new URL(target).origin + '/';
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    Referer: ref,
+    Origin: new URL(ref).origin,
+  };
 
   try {
-    const upstream = await fetch(target, {
-      headers: { 'User-Agent': UA, Referer: referer },
-    });
-    if (!upstream.ok) return res.status(upstream.status).send('upstream ' + upstream.status);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 30000);
+    const r = await fetch(target, { headers, signal: ctrl.signal });
+    clearTimeout(timer);
+    const ct = r.headers.get('content-type') || '';
 
-    const ctype = upstream.headers.get('content-type') || '';
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', '*');
-
-    // m3u8：重写里面的相对分片地址，让分片也走本代理
-    if (/\.m3u8/i.test(target) || ctype.includes('mpegurl') || ctype.includes('vnd.apple')) {
-      let text = await upstream.text();
-      const baseUrl = target;
-      text = text.replace(/^(?!#)(.+)$/gm, (line, seg) => {
-        if (seg.startsWith('http') || seg.startsWith('/api/')) return seg;
-        try {
-          return new URL(seg, baseUrl).href;
-        } catch (e) {
-          return seg;
-        }
+    // m3u8：重写分片相对地址为绝对地址，前端走代理播放
+    if (/\.m3u8/i.test(target) || /mpegurl|vnd\.apple/.test(ct)) {
+      const text = await r.text();
+      const base = new URL(target);
+      const rewritten = text.replace(/^(?!#)(.+)$/gm, (line) => {
+        if (line.startsWith('#') || /https?:\/\//.test(line)) return line;
+        return new URL(line, base).toString();
       });
       res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-      return res.send(text);
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      return res.status(200).send(rewritten);
     }
 
-    // ts / mp4 等二进制：流式转发
-    res.setHeader('Content-Type', ctype || 'application/octet-stream');
-    const buf = await upstream.arrayBuffer();
-    return res.send(Buffer.from(buf));
+    // mp4 / ts 等：流式透传
+    res.setHeader('Content-Type', ct || 'application/octet-stream');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    return r.body.pipe ? r.body : res.status(200).send(await r.arrayBuffer());
   } catch (err) {
-    return res.status(500).send('proxy error: ' + err);
+    return res.status(200).json({ ok: 0, msg: '代理失败：' + err.message });
   }
 }
